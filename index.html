@@ -3561,6 +3561,9 @@ function addDoc() {
       markUpdate("documents");
       cloudPush("Nouveau document: "+file.name);
       renderDocuments();
+      // Pause cloudPull pour 5 sec pour laisser cloudPush terminer
+      if (syncInterval) clearInterval(syncInterval);
+      setTimeout(function(){ startSync(); }, 5000);
     } catch(ex) {
       alert("Fichier trop lourd pour le stockage local. Essayez un PDF plus petit.");
     }
