@@ -1,0 +1,24 @@
+{
+  "name": "Chnusper-Becke",
+  "short_name": "Chnusper-Becke",
+  "description": "Online Platform Chnusper Becke",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FF8C00",
+  "theme_color": "#FF8C00",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
