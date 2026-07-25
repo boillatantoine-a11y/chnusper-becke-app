@@ -1,13 +1,14 @@
 // api/cron-backzettel.js
-// Rappel Backzettel — envoyé à midi (voir vercel.json).
-// Lit l'onglet MONATSPLAN dans le cloud (JSONBin) : pour le jour courant,
+// Rappel Backzettel — envoye a midi (voir vercel.json).
+// Lit l'onglet MONATSPLAN dans la Realtime Database : pour le jour courant,
 // la case contient le nom de la personne qui fait le Backzettel.
-// Seule cette personne reçoit la notification.
+// Seule cette personne recoit la notification.
 //
 // Test manuel depuis l'app : GET /api/cron-backzettel?force=1
+//
+// Variables d'env requises : FB_URL, FB_KEY
 
-const BIN_ID = "6a47e28cf5f4af5e295b2d76";
-const API_KEY = "$2a$10$ojwWhUw28GI5ZG7/g/Cdn.F.t7OcPnW3Sca83hyF28XBmhyH6lD8y";
+import { fbGetEtat } from "./_firebase.js";
 
 const JOURS = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
 
@@ -21,7 +22,7 @@ export default async function handler(req, res) {
 
   const today = suisseNow();
   const day = today.getDate();
-  // Clé du mois telle qu'écrite par l'app : "2026-7" (mois NON complété par un zéro)
+  // Cle du mois telle qu'ecrite par l'app : "2026-7" (mois NON complete par un zero)
   const monthKey = today.getFullYear() + "-" + (today.getMonth() + 1);
   const dayText = JOURS[today.getDay()] + " " +
     String(day).padStart(2, "0") + "." +
@@ -35,20 +36,13 @@ export default async function handler(req, res) {
     }
   }
 
-  // 1) Lire le Monatsplan depuis le cloud
+  // 1) Lire le Monatsplan depuis Firebase
   let plan = null;
   try {
-    const r = await fetch("https://api.jsonbin.io/v3/b/" + BIN_ID + "/latest", {
-      headers: { "X-Master-Key": API_KEY }
-    });
-    if (!r.ok) {
-      return res.status(200).json({
-        recipients: [], dayText,
-        reason: "JSONBin a repondu " + r.status
-      });
+    const data = await fbGetEtat();
+    if (!data) {
+      return res.status(200).json({ recipients: [], dayText, reason: "etat vide dans Firebase" });
     }
-    const json = await r.json();
-    const data = (json && json.record) ? json.record : {};
     plan = data.monatsplan || null;
   } catch (e) {
     return res.status(200).json({
