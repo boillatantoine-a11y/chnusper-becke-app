@@ -1,74 +1,62 @@
-// api/send.js — Envoie des notifications push aux abonnés concernés
-const webpush = require('web-push');
+// api/send.js — Fonction Vercel (Node)
+// Envoie une notification push aux comptes listes dans "recipients".
+// Les abonnements sont lus dans la Realtime Database, noeud "push_subs".
+// Variables d'env requises : FB_URL, FB_KEY, VAPID_PUBLIC_KEY,
+//                            VAPID_PRIVATE_KEY, VAPID_SUBJECT
 
-// Configuration VAPID
-const VAPID_PUBLIC = 'BJ_B6lZVtFCm87VEW3W5x6NFpmWlhYhzI2JJIzz2lSIYwep2hzooklDmh9yeSD6O38MRdn3OoM1_3tyAIZ1BgDo';
-const VAPID_PRIVATE = 's33-1XalyBqOzpgqU1FiuLeH0DQsTvBTpjJ7P4ueAdk';
+import webpush from "web-push";
+import { fbGet, fbDel } from "./_firebase.js";
 
-webpush.setVapidDetails(
-  'mailto:contact@chnusper-becke.ch',
-  VAPID_PUBLIC,
-  VAPID_PRIVATE
-);
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-// JSONBin config (même bin que l'app)
-const BIN_ID = '6a47e28cf5f4af5e295b2d76';
-const API_KEY = '$2a$10$ojwWhUw28GI5ZG7/g/Cdn.F.t7OcPnW3Sca83hyF28XBmhyH6lD8y';
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || "mailto:admin@chnusper-becke.ch",
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
 
-module.exports = async (req, res) => {
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  const { title, body, url, badge, recipients } = req.body || {};
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+  // Securite : on refuse tout envoi sans destinataires explicites (pas de "a tous")
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    return res.status(400).json({ error: "recipients requis (aucun envoi general autorise)" });
   }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  const payload = JSON.stringify({
+    title: title || "Chnusper Becke",
+    body: body || "",
+    url: url || "/",
+    badge: (typeof badge === "number") ? badge : 1
+  });
 
   try {
-    const { title, body, recipients } = req.body;
-    // recipients = tableau de noms d'employés à notifier
-
-    // Récupérer les abonnements depuis JSONBin
-    const binResp = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}/latest`, {
-      headers: { 'X-Master-Key': API_KEY }
-    });
-    const binData = await binResp.json();
-    const record = binData.record || {};
-    const subscriptions = record.pushSubs || {};
-
+    const map = (await fbGet("push_subs")) || {};
+    const cles = Object.keys(map);
+    const perimes = [];
     let sent = 0;
-    let failed = 0;
-    const promises = [];
 
-    // Pour chaque personne à notifier
-    for (const name of (recipients || Object.keys(subscriptions))) {
-      const sub = subscriptions[name];
-      if (!sub) continue;
+    await Promise.all(cles.map(async (k) => {
+      const s = map[k];
+      if (!s || !s.subscription) return;
+      if (recipients.indexOf(s.user) < 0) return;      // pas un destinataire
+      try {
+        await webpush.sendNotification(s.subscription, payload);
+        sent++;
+      } catch (err) {
+        // 404/410 = abonnement expire -> on le retire ; autre erreur -> on garde
+        if (err.statusCode === 404 || err.statusCode === 410) perimes.push(k);
+      }
+    }));
 
-      const payload = JSON.stringify({
-        title: title || 'Chnusper Becke',
-        body: body || 'Nouvelle notification',
-      });
-
-      const p = webpush.sendNotification(sub, payload)
-        .then(() => { sent++; })
-        .catch((err) => {
-          failed++;
-          console.error(`Push failed for ${name}:`, err.statusCode);
-        });
-      promises.push(p);
+    // Menage cible : on supprime les entrees mortes une par une, sans
+    // reecrire toute la liste (plus de risque d'ecrasement entre deux envois).
+    for (const k of perimes) {
+      try { await fbDel("push_subs/" + k); } catch (e) { /* sans consequence */ }
     }
 
-    await Promise.all(promises);
-
-    return res.status(200).json({ success: true, sent, failed });
-  } catch (error) {
-    console.error('Send error:', error);
-    return res.status(500).json({ error: error.message });
+    return res.status(200).json({ ok: true, sent, total: cles.length, retires: perimes.length });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
   }
-};
+}
