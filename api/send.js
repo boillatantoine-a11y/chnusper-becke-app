@@ -153,8 +153,14 @@ export default async function handler(req, res) {
 
   const { title, body, url, badge, recipients } = req.body || {};
 
-  // Securite : on refuse tout envoi sans destinataires explicites (pas de "a tous")
-  if (!Array.isArray(recipients) || recipients.length === 0) {
+  // Diffusion generale : uniquement si elle est demandee explicitement par "*".
+  // Un recipients vide ou absent reste refuse, pour qu'un oubli dans l'app ne
+  // se transforme jamais en envoi a toute la boulangerie.
+  const tousLesAbonnes =
+    recipients === "*" ||
+    (Array.isArray(recipients) && recipients.length === 1 && recipients[0] === "*");
+
+  if (!tousLesAbonnes && (!Array.isArray(recipients) || recipients.length === 0)) {
     return res.status(400).json({ error: "recipients requis (aucun envoi general autorise)" });
   }
 
@@ -177,7 +183,7 @@ export default async function handler(req, res) {
       const s = map[k];
       if (!s || !s.subscription) return;
       enregistres.push(s.user || "?");
-      if (!estDestinataire(s.user, recipients)) return;   // pas un destinataire
+      if (!tousLesAbonnes && !estDestinataire(s.user, recipients)) return;
       try {
         await webpush.sendNotification(s.subscription, payload);
         sent++;
@@ -200,7 +206,8 @@ export default async function handler(req, res) {
       const abo = enregistres.length ? enregistres.join("|") : "AUCUN";
       const err = erreurs.length ? " Err:" + erreurs.join("|") : "";
       return res.status(409).send(
-        "0 envoi. Abonnes:" + abo + " Cible:" + recipients.join("|") + err
+        "0 envoi. Abonnes:" + abo +
+        " Cible:" + (tousLesAbonnes ? "TOUS" : recipients.join("|")) + err
       );
     }
 
