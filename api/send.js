@@ -99,6 +99,29 @@ function subKey(endpoint) {
 }
 
 
+// Rapprochement des noms.
+// L'abonnement est enregistre avec le prenom saisi a l'activation ("Antoine"),
+// alors que l'envoi vise le nom du compte connecte ("Antoine Boillat"). On
+// compare donc sans accents ni majuscules, sur le nom complet OU le prenom.
+function normNom(x) {
+  return String(x || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function estDestinataire(nomAbonne, recipients) {
+  const a = normNom(nomAbonne);
+  if (!a) return false;
+  const aPrenom = a.split(" ")[0];
+  for (const r of recipients) {
+    const b = normNom(r);
+    if (!b) continue;
+    if (a === b) return true;                      // nom complet identique
+    if (aPrenom && aPrenom === b.split(" ")[0]) return true;   // meme prenom
+  }
+  return false;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
@@ -151,7 +174,7 @@ export default async function handler(req, res) {
     await Promise.all(cles.map(async (k) => {
       const s = map[k];
       if (!s || !s.subscription) return;
-      if (recipients.indexOf(s.user) < 0) return;      // pas un destinataire
+      if (!estDestinataire(s.user, recipients)) return;   // pas un destinataire
       try {
         await webpush.sendNotification(s.subscription, payload);
         sent++;
