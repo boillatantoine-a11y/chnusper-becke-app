@@ -56,6 +56,21 @@ export default async function handler(req, res) {
         const data = await r2.json();
         out.firebase = "OK";
         out.abonnes_dans_firebase = data ? Object.keys(data).length : 0;
+        // Sous quel nom de compte chaque appareil est-il enregistre, et quand ?
+        out.abonnes = [];
+        if (data) {
+          for (const k in data) {
+            if (!Object.prototype.hasOwnProperty.call(data, k)) continue;
+            const s = data[k] || {};
+            const ep = (s.subscription && s.subscription.endpoint) || "";
+            out.abonnes.push({
+              compte: s.user || "?",
+              enregistre_le: s.ts ? new Date(s.ts).toISOString().slice(0, 16).replace("T", " ") : "?",
+              service: ep.indexOf("apple") >= 0 ? "Apple" :
+                       ep.indexOf("google") >= 0 ? "Google" : "autre"
+            });
+          }
+        }
       }
     }
   } catch (e) {
