@@ -98,6 +98,9 @@ function subKey(endpoint) {
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+  if (!process.env.FB_URL) {
+    return res.status(200).json({ ok: false, error: "FB_URL manquante sur Vercel" });
+  }
   try {
     const { user, subscription } = req.body || {};
     if (!subscription || !subscription.endpoint) {
@@ -115,4 +118,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: String(e) });
   }
 }
-
