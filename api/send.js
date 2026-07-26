@@ -169,27 +169,39 @@ export default async function handler(req, res) {
     const map = (await fbGet("push_subs")) || {};
     const cles = Object.keys(map);
     const perimes = [];
+    const erreurs = [];
+    const enregistres = [];
     let sent = 0;
 
     await Promise.all(cles.map(async (k) => {
       const s = map[k];
       if (!s || !s.subscription) return;
+      enregistres.push(s.user || "?");
       if (!estDestinataire(s.user, recipients)) return;   // pas un destinataire
       try {
         await webpush.sendNotification(s.subscription, payload);
         sent++;
       } catch (err) {
-        // 404/410 = abonnement expire -> on le retire ; autre erreur -> on garde
-        // 404/410 = abonnement expire. 403 = signe avec l'ancienne cle VAPID.
-        // Dans les deux cas l'entree ne sert plus a rien : on la retire.
-        if (err.statusCode === 404 || err.statusCode === 410 || err.statusCode === 403) perimes.push(k);
+        const code = err && err.statusCode ? err.statusCode : "?";
+        erreurs.push((s.user || "?") + ":" + code);
+        // 404/410 = abonnement expire cote Apple/Google : on le retire.
+        // On ne supprime plus sur 403 : mieux vaut le signaler que l'effacer.
+        if (code === 404 || code === 410) perimes.push(k);
       }
     }));
 
-    // Menage cible : on supprime les entrees mortes une par une, sans
-    // reecrire toute la liste (plus de risque d'ecrasement entre deux envois).
     for (const k of perimes) {
       try { await fbDel("push_subs/" + k); } catch (e) { /* sans consequence */ }
+    }
+
+    // Rien n'est parti : on renvoie une erreur PARLANTE, que l'app affiche
+    // telle quelle. C'est ce texte qui dit ou se situe le probleme.
+    if (sent === 0) {
+      const abo = enregistres.length ? enregistres.join("|") : "AUCUN";
+      const err = erreurs.length ? " Err:" + erreurs.join("|") : "";
+      return res.status(409).send(
+        "0 envoi. Abonnes:" + abo + " Cible:" + recipients.join("|") + err
+      );
     }
 
     return res.status(200).json({ ok: true, sent, total: cles.length, retires: perimes.length });
