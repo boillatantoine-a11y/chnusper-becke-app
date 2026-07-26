@@ -102,11 +102,31 @@ function subKey(endpoint) {
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  webpush.setVapidDetails(
-    process.env.VAPID_SUBJECT || "mailto:admin@chnusper-becke.ch",
-    process.env.VAPID_PUBLIC_KEY,
-    process.env.VAPID_PRIVATE_KEY
-  );
+  // Garde-fou : sans ces variables, web-push leve une exception et la fonction
+  // renvoie un 500 muet. On prefere un message lisible dans l'app.
+  const manque = [];
+  if (!process.env.FB_URL)            manque.push("FB_URL");
+  if (!process.env.VAPID_PUBLIC_KEY)  manque.push("VAPID_PUBLIC_KEY");
+  if (!process.env.VAPID_PRIVATE_KEY) manque.push("VAPID_PRIVATE_KEY");
+  if (manque.length) {
+    return res.status(200).json({
+      ok: false, sent: 0,
+      error: "Variables d'environnement manquantes sur Vercel : " + manque.join(", ")
+    });
+  }
+
+  try {
+    webpush.setVapidDetails(
+      process.env.VAPID_SUBJECT || "mailto:admin@chnusper-becke.ch",
+      process.env.VAPID_PUBLIC_KEY,
+      process.env.VAPID_PRIVATE_KEY
+    );
+  } catch (e) {
+    return res.status(200).json({
+      ok: false, sent: 0,
+      error: "Cles VAPID invalides : " + (e && e.message ? e.message : String(e))
+    });
+  }
 
   const { title, body, url, badge, recipients } = req.body || {};
 
