@@ -157,7 +157,9 @@ export default async function handler(req, res) {
         sent++;
       } catch (err) {
         // 404/410 = abonnement expire -> on le retire ; autre erreur -> on garde
-        if (err.statusCode === 404 || err.statusCode === 410) perimes.push(k);
+        // 404/410 = abonnement expire. 403 = signe avec l'ancienne cle VAPID.
+        // Dans les deux cas l'entree ne sert plus a rien : on la retire.
+        if (err.statusCode === 404 || err.statusCode === 410 || err.statusCode === 403) perimes.push(k);
       }
     }));
 
