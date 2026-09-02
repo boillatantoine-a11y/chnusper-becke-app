@@ -114,21 +114,31 @@ module.exports = async (req, res) => {
       recipient: body.recipient || null
     });
 
-    // Prévenir la Konditorei et les Sandwiches, comme au dépôt manuel
-    try {
-      const host = req.headers["x-forwarded-host"] || req.headers.host;
-      const proto = req.headers["x-forwarded-proto"] || "https";
-      await fetch(proto + "://" + host + "/api/send", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: "🍰 Konditorei",
-          body: "Les feuilles Konditorei et Snacks sont prêtes",
-          url: "/",
-          recipients: ["Stefanie Zeller", "Cornelia Zürcher",
-                       "Miguel Pascoal", "Florina Redzepi"]
-        })
-      });
-    } catch (e) { /* la notification n'est pas bloquante */ }
+    // Deux notifications, comme au dépôt manuel dans l'app.
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const proto = req.headers["x-forwarded-proto"] || "https";
+    const base = proto + "://" + host;
+
+    async function prevenir(titre, texte, gens) {
+      try {
+        await fetch(base + "/api/send", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: titre, body: texte, url: "/", recipients: gens })
+        });
+      } catch (e) { /* une notification qui échoue ne doit pas perdre le PDF */ }
+    }
+
+    // 1. Le fournil. Au dépôt manuel, Antoine choisit un destinataire ; par
+    //    e-mail il n'y a personne pour choisir, donc les trois sont prévenus.
+    //    Sans ça, un Backzettel envoyé par la patronne arrivait en silence.
+    await prevenir("💬 Nouveau Backzettel",
+                   "Un nouveau Backzettel a été déposé",
+                   ["Antoine", "Timon Burri", "Deniz Teixeira"]);
+
+    // 2. La Konditorei et les Sandwiches (Florina a l'onglet, pas la notification)
+    await prevenir("🍰 Konditorei",
+                   "La liste de production Konditorei est prête !",
+                   ["Stefanie Zeller", "Cornelia Zürcher", "Miguel Pascoal"]);
 
     return res.status(200).json({ ok: true, name: nom, ts: ts,
                                   taille_ko: Math.round(octets / 1024) });
