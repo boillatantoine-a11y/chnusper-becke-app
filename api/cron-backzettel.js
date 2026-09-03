@@ -1,206 +1,170 @@
 // api/cron-backzettel.js
-// Rappel Backzettel — envoye a midi (voir vercel.json).
-// Lit le MONATSPLAN dans la Realtime Database : pour le jour courant, la case
-// contient le nom de la personne qui fait le Backzettel. Elle seule est prevenue.
 //
-// Test manuel depuis l'app : GET /api/cron-backzettel?force=1
+// Le rappel de midi « tu fais le Backzettel ce soir » NE PEUT PAS partir de
+// l'app : une PWA fermée n'exécute aucun code. Il faut un service côté
+// serveur, déclenché par une planification Vercel. C'est ce fichier.
 //
-// Variables d'env requises : FB_URL, FB_KEY
+// À DÉPLOYER :
+//   1. place ce fichier dans  api/cron-backzettel.js  à la racine du projet
+//   2. ajoute la planification dans vercel.json (voir plus bas)
+//   3. renseigne les variables d'environnement sur Vercel :
+//        FB_URL             l'URL de ta base Firebase
+//        VAPID_PUBLIC_KEY   la clé publique des notifications
+//        VAPID_PRIVATE_KEY  la clé privée
+//        VAPID_SUBJECT      mailto:ton@adresse
+//   4. installe la dépendance :  npm install web-push
+//
+// vercel.json :
+//   { "crons": [ { "path": "/api/cron-backzettel", "schedule": "0 11 * * *" } ] }
+//
+//   11h UTC = 12h en Suisse l'hiver, 13h l'été. Pour viser midi toute
+//   l'année, il faudrait deux planifications ; Vercel n'accepte que l'UTC.
 
-import crypto from "crypto";
+const webpush = require("web-push");
 
-// ---------------------------------------------------------------------------
-//  Acces REST a la Realtime Database, sans SDK.
-//  Ce bloc est recopie a l'identique dans chaque fichier de api/ : Vercel ne
-//  deploie pas les fichiers partages commencant par un tiret bas.
-//  Variables d'env requises : FB_URL, FB_KEY
-// ---------------------------------------------------------------------------
+const FB = (process.env.FB_URL || "").replace(/\/$/, "");
 
-const FB_URL = (process.env.FB_URL || "").replace(/\/+$/, "");
-const FB_KEY = process.env.FB_KEY || "";
+// Le rappel lit l'onglet MONATSPLAN — la liste où Antoine inscrit, jour par
+// jour, QUI fait le Backzettel. Un seul nom par jour, écrit en clair.
+// Ce n'est PAS le planning de l'équipe : celui-là dit qui travaille, pas qui
+// fait la feuille. Le service lisait le mauvais tableau et prévenait tous
+// ceux qui étaient de service le soir.
+//
+// Forme des données : cb_monatsplan["2026-9"]["3"] = "Deniz"
+//                     (l'année et le mois SANS zéro devant)
 
-let tokenCache = null;   // { idToken, refresh, exp } — reutilise si la fonction est chaude
+// Le prénom du Monatsplan -> la clé d'abonné aux notifications.
+// Antoine s'abonne sous « Antoine Boillat » ou « Antoine » selon l'appareil :
+// on tente les deux, le service d'envoi ignore ce qu'il ne connaît pas.
+const NOMS_PUSH = {
+  "antoine": ["Antoine Boillat", "Antoine"],
+  "timon":   ["Timon Burri", "Timon"],
+  "deniz":   ["Deniz Teixeira", "Deniz"]
+};
 
-async function fbAuthToken() {
-  if (!FB_KEY) return null;
-  const now = Date.now();
-  if (tokenCache && tokenCache.exp > now + 60000) return tokenCache.idToken;
-
-  if (tokenCache && tokenCache.refresh) {
-    try {
-      const r = await fetch("https://securetoken.googleapis.com/v1/token?key=" + FB_KEY, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(tokenCache.refresh)
-      });
-      if (r.ok) {
-        const j = await r.json();
-        tokenCache = { idToken: j.id_token, refresh: j.refresh_token,
-                       exp: now + (parseInt(j.expires_in, 10) || 3600) * 1000 };
-        return tokenCache.idToken;
-      }
-    } catch (e) { /* on repart sur une nouvelle session */ }
-  }
-
-  const r2 = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + FB_KEY, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ returnSecureToken: true })
-  });
-  if (!r2.ok) throw new Error("Auth Firebase " + r2.status);
-  const j2 = await r2.json();
-  tokenCache = { idToken: j2.idToken, refresh: j2.refreshToken,
-                 exp: now + (parseInt(j2.expiresIn, 10) || 3600) * 1000 };
-  return tokenCache.idToken;
+async function fbGet(chemin) {
+  const r = await fetch(`${FB}/${chemin}.json`);
+  if (!r.ok) throw new Error(`Firebase ${r.status}`);
+  return r.json();
 }
 
-async function fbEndpoint(path) {
-  if (!FB_URL) throw new Error("FB_URL manquante dans les variables d'environnement");
-  const u = FB_URL + "/" + path + ".json";
-  const tk = await fbAuthToken();
-  return tk ? u + "?auth=" + encodeURIComponent(tk) : u;
-}
-
-async function fbGet(path) {
-  const r = await fetch(await fbEndpoint(path));
-  if (!r.ok) throw new Error("Firebase GET " + r.status);
-  return await r.json();
-}
-
-async function fbPut(path, data) {
-  const r = await fetch(await fbEndpoint(path), {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  if (!r.ok) throw new Error("Firebase PUT " + r.status);
-  return true;
-}
-
-async function fbDel(path) {
-  const r = await fetch(await fbEndpoint(path), { method: "DELETE" });
-  if (!r.ok) throw new Error("Firebase DELETE " + r.status);
-  return true;
-}
-
-// L'app stocke l'etat principal en CHAINE JSON (pour ne perdre ni les tableaux
-// vides ni les cles numeriques). On la deplie ici.
-async function fbGetEtat() {
-  const raw = await fbGet("etat");
-  if (!raw) return null;
-  if (typeof raw === "string") {
-    try { return JSON.parse(raw); } catch (e) { return null; }
-  }
-  return raw;
-}
-
-// Une cle Realtime Database ne supporte ni . ni / ni : — on hache l'endpoint.
-// Bonus : le meme appareil qui se reabonne ecrase son entree.
-function subKey(endpoint) {
-  return crypto.createHash("sha1").update(String(endpoint)).digest("hex");
-}
-
-
-const JOURS = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
-
-function suisseNow() {
-  const now = new Date();
-  return new Date(now.toLocaleString("en-US", { timeZone: "Europe/Zurich" }));
-}
-
-export default async function handler(req, res) {
-  const force = req.query && (req.query.force === "1" || req.query.force === 1);
-
-  const today = suisseNow();
-  const day = today.getDate();
-  // Cle du mois telle qu'ecrite par l'app : "2026-7" (mois NON complete par un zero)
-  const monthKey = today.getFullYear() + "-" + (today.getMonth() + 1);
-  const dayText = JOURS[today.getDay()] + " " +
-    String(day).padStart(2, "0") + "." +
-    String(today.getMonth() + 1).padStart(2, "0");
-
-  if (!force) {
-    const secret = process.env.CRON_SECRET;
-    const auth = req.headers["authorization"] || "";
-    if (secret && auth !== "Bearer " + secret) {
-      return res.status(401).json({ recipients: [], dayText, reason: "non autorise" });
-    }
-  }
-
-  // 1) Lire le Monatsplan depuis Firebase
-  let plan = null;
-  try {
-    const data = await fbGetEtat();
-    if (!data) {
-      return res.status(200).json({ recipients: [], dayText, reason: "etat vide dans Firebase" });
-    }
-    plan = data.monatsplan || null;
-  } catch (e) {
-    return res.status(200).json({
-      recipients: [], dayText,
-      reason: "lecture du Monatsplan impossible : " + (e && e.message ? e.message : String(e))
-    });
-  }
-
-  if (!plan) {
-    return res.status(200).json({ recipients: [], dayText, reason: "Monatsplan vide dans le cloud" });
-  }
-
-  const mois = plan[monthKey];
-  if (!mois) {
-    return res.status(200).json({ recipients: [], dayText, reason: "aucune entree pour " + monthKey });
-  }
-
-  // 2) Qui est inscrit aujourd'hui
-  const nom = String(mois[String(day)] || mois[day] || "").trim();
-  if (!nom) {
-    return res.status(200).json({
-      recipients: [], dayText,
-      reason: "aucun nom inscrit le " + day + " dans le Monatsplan"
-    });
-  }
-
-  // Correspondance prenom ecrit dans le Monatsplan -> compte dans l'app
-  const NOMS = {
-    "antoine": "Antoine",
-    "timon":   "Timon Burri",
-    "deniz":   "Deniz Teixeira"
+function dateDemain() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const a = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const j = String(d.getDate()).padStart(2, "0");
+  return {
+    iso: `${a}-${m}-${j}`,
+    moisCle: `${a}-${m}`,
+    annee: a,
+    mois: d.getMonth() + 1,          // SANS zéro devant : la clé du Monatsplan
+    jour: d.getDate(),
+    texte: `${d.getDate()}.${d.getMonth() + 1}.`
   };
-  // Plusieurs noms possibles, separes par virgule ou slash
-  const recipients = nom
-    .split(/[,\/]+/)
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(s => NOMS[s.toLowerCase()] || s);
+}
 
-  // 3) Envoyer le rappel a cette personne uniquement
-  const host = req.headers["x-forwarded-host"] || req.headers.host;
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  const base = proto + "://" + host;
+// Qui fait le Backzettel ce jour-là, d'après l'onglet Monatsplan
+function destinatairesPour(monatsplan, dem) {
+  if (!monatsplan) return [];
+
+  // La clé du mois s'écrit sans zéro devant : "2026-9", pas "2026-09"
+  const cle = dem.annee + "-" + dem.mois;
+  const mois = monatsplan[cle];
+  if (!mois) return [];
+
+  const brut = String(mois[String(dem.jour)] || "").trim();
+  if (!brut) return [];
+
+  // Une case peut contenir deux noms (« Antoine / Deniz »)
+  const morceaux = brut.split(/[\/,+&]| et | und /i);
+  const out = [];
+  for (const m of morceaux) {
+    const p = m.trim().toLowerCase();
+    if (!p) continue;
+    for (const cleN in NOMS_PUSH) {
+      if (p.indexOf(cleN) >= 0) {
+        for (const n of NOMS_PUSH[cleN]) if (!out.includes(n)) out.push(n);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+module.exports = async (req, res) => {
+  const force = req.query && req.query.force === "1";
+  const dem = dateDemain();
 
   try {
-    const resp = await fetch(base + "/api/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: "🥖 Backzettel",
-        body: "Ce soir tu fais le Backzettel (" + dayText + ").",
-        url: "/",
-        recipients: recipients
-      })
-    });
-    if (!resp.ok) {
-      const txt = await resp.text().catch(function () { return ""; });
+    if (!FB) {
+      return res.status(200).json({ ok: false, reason: "FB_URL absente des variables d'environnement" });
+    }
+
+    // Le Monatsplan n'est PAS un nœud séparé : il voyage à l'intérieur de
+    // l'état général, sous "etat". Le service lisait un chemin qui n'existe
+    // pas et ne trouvait donc jamais personne.
+    const [etatBrut, abonnes] = await Promise.all([
+      fbGet("etat").catch(() => null),
+      fbGet("pushSubs").catch(() => null),
+    ]);
+
+    let etat = etatBrut;
+    // L'app enregistre l'état sous forme de texte JSON
+    if (typeof etat === "string") {
+      try { etat = JSON.parse(etat); } catch (e) { etat = null; }
+    }
+    const monatsplan = (etat && etat.monatsplan) ? etat.monatsplan : null;
+
+    const noms = destinatairesPour(monatsplan, dem);
+
+    // En mode diagnostic on ne notifie personne : on répond seulement QUI
+    // serait notifié. C'est ce que lit le bouton « Pourquoi je ne reçois
+    // pas le rappel ? » dans l'app.
+    if (force) {
       return res.status(200).json({
-        recipients: [], dayText,
-        reason: "/api/send a repondu " + resp.status + " " + txt.slice(0, 120)
+        ok: true, force: true, dayText: dem.texte, recipients: noms,
+        abonnesConnus: abonnes ? Object.keys(abonnes).length : 0,
+        reason: noms.length ? null : ("aucun nom au Monatsplan pour le " + dem.jour + "."
+                  + dem.mois + " — clé cherchée : " + dem.annee + "-" + dem.mois),
       });
     }
-    return res.status(200).json({ recipients, dayText });
-  } catch (e) {
-    return res.status(200).json({
-      recipients: [], dayText,
-      reason: "envoi impossible : " + (e && e.message ? e.message : String(e))
+
+    if (!noms.length) {
+      return res.status(200).json({ ok: true, sent: 0, reason: "aucun destinataire demain" });
+    }
+
+    webpush.setVapidDetails(
+      process.env.VAPID_SUBJECT || "mailto:info@chnusper-becke.ch",
+      process.env.VAPID_PUBLIC_KEY,
+      process.env.VAPID_PRIVATE_KEY
+    );
+
+    const charge = JSON.stringify({
+      title: "🥖 Backzettel",
+      body: `Tu fais le Backzettel ce soir pour demain ${dem.texte}`,
+      tag: "backzettel-" + dem.iso,
+      url: "/",
     });
+
+    let envoyes = 0, perimes = 0;
+    for (const nom of noms) {
+      const sub = abonnes && abonnes[nom.replace(/[.#$/[\]]/g, "_")];
+      if (!sub) continue;
+      const liste = Array.isArray(sub) ? sub : [sub];
+      for (const s of liste) {
+        try {
+          await webpush.sendNotification(s, charge);
+          envoyes++;
+        } catch (e) {
+          // 404 et 410 : l'abonnement de l'appareil a expiré
+          if (e.statusCode === 404 || e.statusCode === 410) perimes++;
+        }
+      }
+    }
+
+    return res.status(200).json({ ok: true, sent: envoyes, expired: perimes, recipients: noms, dayText: dem.texte });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: String(e && e.message || e) });
   }
-}
+};
