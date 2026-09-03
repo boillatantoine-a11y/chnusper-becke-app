@@ -48,9 +48,10 @@ async function fbGet(chemin) {
   return r.json();
 }
 
+// À midi, celui qui fait le Backzettel CE SOIR est inscrit AUJOURD'HUI au
+// Monatsplan. Le service regardait le lendemain : il visait la mauvaise case.
 function dateDemain() {
   const d = new Date();
-  d.setDate(d.getDate() + 1);
   const a = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const j = String(d.getDate()).padStart(2, "0");
@@ -122,11 +123,32 @@ module.exports = async (req, res) => {
     // serait notifié. C'est ce que lit le bouton « Pourquoi je ne reçois
     // pas le rappel ? » dans l'app.
     if (force) {
+      // On dit exactement ce qu'on a lu : sans ça, impossible de savoir si le
+      // problème vient du cloud, du mois cherché ou de la case elle-même.
+      let detail = "";
+      if (!etat) {
+        detail = "l'état n'a pas pu être lu dans Firebase";
+      } else if (!monatsplan) {
+        detail = "l'état a été lu mais ne contient pas de Monatsplan";
+      } else {
+        const moisDispo = Object.keys(monatsplan).filter(function (k) {
+          return k.indexOf("-") > 0;
+        });
+        const cle = dem.annee + "-" + dem.mois;
+        const mois = monatsplan[cle];
+        if (!mois) {
+          detail = "mois " + cle + " absent — mois présents : "
+                 + (moisDispo.length ? moisDispo.join(", ") : "aucun");
+        } else {
+          const jours = Object.keys(mois).slice(0, 12).join(",");
+          detail = "mois " + cle + " trouvé, case " + dem.jour + " = «"
+                 + String(mois[String(dem.jour)] || "vide") + "» — jours remplis : " + jours;
+        }
+      }
       return res.status(200).json({
         ok: true, force: true, dayText: dem.texte, recipients: noms,
         abonnesConnus: abonnes ? Object.keys(abonnes).length : 0,
-        reason: noms.length ? null : ("aucun nom au Monatsplan pour le " + dem.jour + "."
-                  + dem.mois + " — clé cherchée : " + dem.annee + "-" + dem.mois),
+        reason: noms.length ? null : detail,
       });
     }
 
